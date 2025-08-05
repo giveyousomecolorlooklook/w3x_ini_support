@@ -1,7 +1,7 @@
 {
   "name": "w3x-ini-support",
   "displayName": "w3x_ini_support",
-  "description": "",
+  "description": "Go-to-definition and find-all-references for .ini section names.",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.102.0"
@@ -22,10 +22,6 @@
       }
     ],
     "commands": [
-      {
-        "command": "w3x-ini-support.helloWorld",
-        "title": "Hello World"
-      }
     ]
   },
   "scripts": {

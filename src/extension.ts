@@ -52,6 +52,50 @@ class IniSectionDefinitionProvider implements vscode.DefinitionProvider {
     }
 }
 
+class IniSectionReferenceProvider implements vscode.ReferenceProvider {
+    provideReferences(
+        doc: vscode.TextDocument,
+        pos: vscode.Position,
+        context: vscode.ReferenceContext,
+        token: vscode.CancellationToken
+    ): vscode.ProviderResult<vscode.Location[]> {
+        const range = doc.getWordRangeAtPosition(pos, /[\w\d]+/);
+        if (!range) {
+            return [];
+        }
+        const targetId = doc.getText(range);
+
+        // 扫描工作区所有 .ini
+        return vscode.workspace.findFiles('**/*.ini').then(uris => {
+            const locs: vscode.Location[] = [];
+            for (const uri of uris) {
+                if (token.isCancellationRequested) {
+                    break;
+                }
+                const content = fs.readFileSync(uri.fsPath, 'utf8');
+                const lines = content.split(/\r?\n/);
+
+                // 1) 节定义： [id]
+                lines.forEach((line, idx) => {
+                    if (line.trim() === `[${targetId}]`) {
+                        locs.push(new vscode.Location(uri, new vscode.Range(idx, 0, idx, 0)));
+                    }
+                });
+
+                // 2) 引用字段：行内出现 id
+                lines.forEach((line, idx) => {
+                    const idxInLine = line.indexOf(targetId);
+                    if (idxInLine >= 0 && !line.trim().startsWith('[')) {
+                        const pos = new vscode.Position(idx, idxInLine);
+                        locs.push(new vscode.Location(uri, new vscode.Range(pos, pos.translate(0, targetId.length))));
+                    }
+                });
+            }
+            return locs;
+        });
+    }
+}
+
 export function activate(context: vscode.ExtensionContext) {
 
 	console.log('w3x_ini_support is now active!');
@@ -64,7 +108,12 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(defProvider);
 
-	
+	// 新增：引用
+    const refProvider = vscode.languages.registerReferenceProvider(
+        iniSelector,
+        new IniSectionReferenceProvider()
+    );
+    context.subscriptions.push(refProvider);
 
 }
 
