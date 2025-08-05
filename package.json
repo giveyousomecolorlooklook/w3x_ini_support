@@ -1,5 +1,11 @@
 {
   "name": "w3x-ini-support",
+  "publisher": "chentp0601", 
+  "repository": {                           
+    "type": "git",
+    "url": "https://github.com/giveyousomecolorlooklook/w3x_ini_support.git"
+  }, 
+  "license": "MIT", 
   "displayName": "w3x_ini_support",
   "description": "Go-to-definition and find-all-references for .ini section names.",
   "version": "0.0.1",
