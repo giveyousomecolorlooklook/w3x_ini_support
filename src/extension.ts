@@ -96,6 +96,53 @@ class IniSectionReferenceProvider implements vscode.ReferenceProvider {
     }
 }
 
+// 新增 HoverProvider
+class IniSectionHoverProvider implements vscode.HoverProvider {
+    provideHover(
+        doc: vscode.TextDocument,
+        pos: vscode.Position,
+        token: vscode.CancellationToken
+    ): vscode.ProviderResult<vscode.Hover> {
+        const range = doc.getWordRangeAtPosition(pos, /[\w\d]+/);
+        if (!range) {
+            return;
+        }
+        const targetId = doc.getText(range);
+
+        // 扫描工作区所有 .ini 找定义
+        return vscode.workspace.findFiles('**/*.ini').then(uris => {
+            for (const uri of uris) {
+                if (token.isCancellationRequested) {
+                    break;
+                }
+                const lines = fs.readFileSync(uri.fsPath, 'utf8').split(/\r?\n/);
+                let inside = false;
+                const contentLines: string[] = [];
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (trimmed === `[${targetId}]`) {
+                        inside = true;
+                        contentLines.push(line);
+                        continue;
+                    }
+                    if (inside) {
+                        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+                            break; // 下一个节结束
+                        }
+                        contentLines.push(line);
+                    }
+                }
+                if (contentLines.length) {
+                    const md = new vscode.MarkdownString();
+                    md.appendCodeblock(contentLines.join('\n'), 'ini');
+                    return new vscode.Hover(md, range);
+                }
+            }
+        });
+    }
+}
+
+
 export function activate(context: vscode.ExtensionContext) {
 
 	console.log('w3x_ini_support is now active!');
@@ -114,6 +161,13 @@ export function activate(context: vscode.ExtensionContext) {
         new IniSectionReferenceProvider()
     );
     context.subscriptions.push(refProvider);
+
+	  // 新增：hover
+    const hoverProvider = vscode.languages.registerHoverProvider(
+        iniSelector,
+        new IniSectionHoverProvider()
+    );
+    context.subscriptions.push(hoverProvider);
 
 }
 
