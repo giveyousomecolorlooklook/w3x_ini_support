@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 
-
+// 跳转定义
 class IniSectionDefinitionProvider implements vscode.DefinitionProvider {
     provideDefinition(
         doc: vscode.TextDocument,
@@ -51,7 +51,7 @@ class IniSectionDefinitionProvider implements vscode.DefinitionProvider {
         } catch { /* ignore unreadable */ }
     }
 }
-
+// 查找引用
 class IniSectionReferenceProvider implements vscode.ReferenceProvider {
     provideReferences(
         doc: vscode.TextDocument,
@@ -60,34 +60,41 @@ class IniSectionReferenceProvider implements vscode.ReferenceProvider {
         token: vscode.CancellationToken
     ): vscode.ProviderResult<vscode.Location[]> {
         const range = doc.getWordRangeAtPosition(pos, /[\w\d]+/);
-        if (!range) {
-            return [];
-        }
+        if (!range) { return []; }
         const targetId = doc.getText(range);
 
-        // 扫描工作区所有 .ini
-        return vscode.workspace.findFiles('**/*.ini').then(uris => {
+        // 同时扫描 .ini 和 .lua
+        return vscode.workspace.findFiles('**/*.{ini,lua}').then(uris => {
             const locs: vscode.Location[] = [];
             for (const uri of uris) {
-                if (token.isCancellationRequested) {
-                    break;
-                }
+                if (token.isCancellationRequested) { break; }
+
                 const content = fs.readFileSync(uri.fsPath, 'utf8');
                 const lines = content.split(/\r?\n/);
 
-                // 1) 节定义： [id]
                 lines.forEach((line, idx) => {
-                    if (line.trim() === `[${targetId}]`) {
-                        locs.push(new vscode.Location(uri, new vscode.Range(idx, 0, idx, 0)));
-                    }
-                });
+                    const trimmed = line.trim();
 
-                // 2) 引用字段：行内出现 id
-                lines.forEach((line, idx) => {
-                    const idxInLine = line.indexOf(targetId);
-                    if (idxInLine >= 0 && !line.trim().startsWith('[')) {
-                        const pos = new vscode.Position(idx, idxInLine);
-                        locs.push(new vscode.Location(uri, new vscode.Range(pos, pos.translate(0, targetId.length))));
+                    // 1) .ini：行内引用（排除节名）
+                    if (uri.fsPath.endsWith('.ini') && !trimmed.startsWith('[')) {
+                        let offset = 0;
+                        let idxInLine = -1;
+                        while ((idxInLine = line.indexOf(targetId, offset)) !== -1) {
+                            const posStart = new vscode.Position(idx, idxInLine);
+                            locs.push(new vscode.Location(uri, new vscode.Range(posStart, posStart.translate(0, targetId.length))));
+                            offset = idxInLine + targetId.length;
+                        }
+                    }
+
+                    // 2) .lua：双引号或单引号里的 id
+                    if (uri.fsPath.endsWith('.lua')) {
+                        // 匹配 "id" 或 'id'
+                        const luaRegex = new RegExp(`(['"])${targetId}\\1`, 'g');
+                        let match;
+                        while ((match = luaRegex.exec(line)) !== null) {
+                            const posStart = new vscode.Position(idx, match.index + 1); // +1 跳过引号
+                            locs.push(new vscode.Location(uri, new vscode.Range(posStart, posStart.translate(0, targetId.length))));
+                        }
                     }
                 });
             }
@@ -96,7 +103,7 @@ class IniSectionReferenceProvider implements vscode.ReferenceProvider {
     }
 }
 
-// 新增 HoverProvider
+// 鼠标悬停
 class IniSectionHoverProvider implements vscode.HoverProvider {
     provideHover(
         doc: vscode.TextDocument,
