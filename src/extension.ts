@@ -146,25 +146,29 @@ class IniSectionHoverProvider implements vscode.HoverProvider {
 export function activate(context: vscode.ExtensionContext) {
 
 	console.log('w3x_ini_support is now active!');
+	// 1. 语言选择器改为数组
+	const iniLuaSelector = [
+		{ language: 'ini', scheme: 'file' },
+		{ language: 'lua',  scheme: 'file' }
+	];
 
 	// 新增 GoTo Definition
-    const iniSelector = { language: 'ini', scheme: 'file' };
     const defProvider = vscode.languages.registerDefinitionProvider(
-        iniSelector,
+        iniLuaSelector,
         new IniSectionDefinitionProvider()
     );
     context.subscriptions.push(defProvider);
 
 	// 新增：引用
     const refProvider = vscode.languages.registerReferenceProvider(
-        iniSelector,
+        iniLuaSelector,
         new IniSectionReferenceProvider()
     );
     context.subscriptions.push(refProvider);
 
 	  // 新增：hover
     const hoverProvider = vscode.languages.registerHoverProvider(
-        iniSelector,
+        iniLuaSelector,
         new IniSectionHoverProvider()
     );
     context.subscriptions.push(hoverProvider);
