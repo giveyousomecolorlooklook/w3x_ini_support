@@ -148,7 +148,7 @@ class IniSectionHoverProvider implements vscode.HoverProvider {
         });
     }
 }
-
+// 补全
 class IniSectionCompletionProvider implements vscode.CompletionItemProvider {
     /**
      * 提供补全项，基于工作区所有 .ini 文件中的节名及其后面的内容作为detail
@@ -198,15 +198,17 @@ class IniSectionCompletionProvider implements vscode.CompletionItemProvider {
             }
         }
 
-        return Array.from(sectionMap.entries()).map(([id, detail]) => {
-            const item = new vscode.CompletionItem(id, vscode.CompletionItemKind.Reference);
-            item.detail = detail || 'ini section';
+		return Array.from(sectionMap.entries()).map(([id, detail]) => {
+			const item = new vscode.CompletionItem(id, vscode.CompletionItemKind.Reference);
+			item.documentation = new vscode.MarkdownString('```ini\n' + detail + '\n```');
+			item.documentation.isTrusted = true;
 
-            const wordRange = doc.getWordRangeAtPosition(pos, /[\w\d]+/);
-            item.range = wordRange ?? new vscode.Range(pos, pos);
-            item.insertText = id;
-            return item;
-        });
+			const wordRange = doc.getWordRangeAtPosition(pos, /[\w\d]+/);
+			item.range = wordRange ?? new vscode.Range(pos, pos);
+			item.insertText = id;
+			return item;
+		});
+
     }
 }
 
