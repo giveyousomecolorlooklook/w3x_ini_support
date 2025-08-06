@@ -149,10 +149,9 @@ class IniSectionHoverProvider implements vscode.HoverProvider {
     }
 }
 
-//补全
 class IniSectionCompletionProvider implements vscode.CompletionItemProvider {
     /**
-     * 提供补全项，基于工作区所有 .ini 文件中的节名
+     * 提供补全项，基于工作区所有 .ini 文件中的节名及其后面的内容作为detail
      */
     async provideCompletionItems(
         doc: vscode.TextDocument,
@@ -161,7 +160,7 @@ class IniSectionCompletionProvider implements vscode.CompletionItemProvider {
         context: vscode.CompletionContext
     ): Promise<vscode.CompletionItem[]> {
         const uris = await vscode.workspace.findFiles('**/*.ini');
-        const sectionIds = new Set<string>();
+        const sectionMap = new Map<string, string>(); // key: section id, value: detail内容
 
         for (const uri of uris) {
             if (token.isCancellationRequested) {
@@ -170,30 +169,49 @@ class IniSectionCompletionProvider implements vscode.CompletionItemProvider {
             try {
                 const content = fs.readFileSync(uri.fsPath, 'utf8');
                 const lines = content.split(/\r?\n/);
+
+                let currentSection = '';
+                let detailLines: string[] = [];
+
                 for (const line of lines) {
-                    const m = line.trim().match(/^\[(.+?)\]$/);
-                    if (m) {
-                        sectionIds.add(m[1]);
+                    const sectionMatch = line.match(/^\[(.+?)\]$/);
+                    if (sectionMatch) {
+                        // 保存上一个节的detail
+                        if (currentSection) {
+                            sectionMap.set(currentSection, detailLines.join('\n').trim());
+                        }
+                        currentSection = sectionMatch[1];
+                        detailLines = [];
+                    } else if (currentSection) {
+                        // 收集当前节的内容作为detail
+                        if (line.trim() !== '') {
+                            detailLines.push(line);
+                        }
                     }
+                }
+                // 保存最后一个节的detail
+                if (currentSection) {
+                    sectionMap.set(currentSection, detailLines.join('\n').trim());
                 }
             } catch {
                 // 忽略无法读取的文件
             }
         }
 
-		return Array.from(sectionIds).map(id => {
-			const item = new vscode.CompletionItem(id, vscode.CompletionItemKind.Reference);
-			item.detail = 'ini section';
+        return Array.from(sectionMap.entries()).map(([id, detail]) => {
+            const item = new vscode.CompletionItem(id, vscode.CompletionItemKind.Reference);
+            item.detail = detail || 'ini section';
 
-			// 计算替换范围
-			const startPos = new vscode.Position(pos.line, pos.character - 1);
-			const endPos = pos;
-			item.range = new vscode.Range(startPos, endPos);
-			item.insertText = id;
-			return item;
-		});
+            const wordRange = doc.getWordRangeAtPosition(pos, /[\w\d]+/);
+            item.range = wordRange ?? new vscode.Range(pos, pos);
+            item.insertText = id;
+            return item;
+        });
     }
 }
+
+
+
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -225,10 +243,12 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(hoverProvider);
 
+	// 新增：补全
 	const completionProvider = vscode.languages.registerCompletionItemProvider(
 		iniLuaSelector,
 		new IniSectionCompletionProvider(),
-		"#"  // 触发补全的字符
+		".","\"",",","'"
+
 	);
 	context.subscriptions.push(completionProvider);
 
