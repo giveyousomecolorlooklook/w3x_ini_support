@@ -149,6 +149,51 @@ class IniSectionHoverProvider implements vscode.HoverProvider {
     }
 }
 
+//补全
+class IniSectionCompletionProvider implements vscode.CompletionItemProvider {
+    /**
+     * 提供补全项，基于工作区所有 .ini 文件中的节名
+     */
+    async provideCompletionItems(
+        doc: vscode.TextDocument,
+        pos: vscode.Position,
+        token: vscode.CancellationToken,
+        context: vscode.CompletionContext
+    ): Promise<vscode.CompletionItem[]> {
+        const uris = await vscode.workspace.findFiles('**/*.ini');
+        const sectionIds = new Set<string>();
+
+        for (const uri of uris) {
+            if (token.isCancellationRequested) {
+                break;
+            }
+            try {
+                const content = fs.readFileSync(uri.fsPath, 'utf8');
+                const lines = content.split(/\r?\n/);
+                for (const line of lines) {
+                    const m = line.trim().match(/^\[(.+?)\]$/);
+                    if (m) {
+                        sectionIds.add(m[1]);
+                    }
+                }
+            } catch {
+                // 忽略无法读取的文件
+            }
+        }
+
+		return Array.from(sectionIds).map(id => {
+			const item = new vscode.CompletionItem(id, vscode.CompletionItemKind.Reference);
+			item.detail = 'ini section';
+
+			// 计算替换范围
+			const startPos = new vscode.Position(pos.line, pos.character - 1);
+			const endPos = pos;
+			item.range = new vscode.Range(startPos, endPos);
+			item.insertText = id;
+			return item;
+		});
+    }
+}
 
 export function activate(context: vscode.ExtensionContext) {
 
@@ -173,12 +218,19 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(refProvider);
 
-	  // 新增：hover
+	// 新增：hover
     const hoverProvider = vscode.languages.registerHoverProvider(
         iniLuaSelector,
         new IniSectionHoverProvider()
     );
     context.subscriptions.push(hoverProvider);
+
+	const completionProvider = vscode.languages.registerCompletionItemProvider(
+		iniLuaSelector,
+		new IniSectionCompletionProvider(),
+		"#"  // 触发补全的字符
+	);
+	context.subscriptions.push(completionProvider);
 
 }
 
