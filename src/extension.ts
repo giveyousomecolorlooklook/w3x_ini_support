@@ -3,79 +3,138 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 
-// 跳转定义
-class IniSectionDefinitionProvider implements vscode.DefinitionProvider {
-    provideDefinition(
-        doc: vscode.TextDocument,
-        pos: vscode.Position
-    ): vscode.ProviderResult<vscode.Location | vscode.Location[]> {
-        const range = doc.getWordRangeAtPosition(pos, /[\w\d]+/);
-        if (!range) {return;}
+// 配置项缓存管理器
+class ConfigSectionManager {
+    private static instance: ConfigSectionManager;
+    private sectionCache: Map<string, vscode.Location> = new Map();
+    private lastScanTime: number = 0;
 
-        const targetId = doc.getText(range);
-
-        // 1. 先在当前文件找
-        const cur = this.findSection(doc, targetId);
-        if (cur) {return cur;}
-
-        // 2. 再扫描工作区所有 .ini
-        return vscode.workspace.findFiles('**/*.ini').then(uris => {
-            const locs: vscode.Location[] = [];
-            for (const uri of uris) {
-                if (uri.fsPath === doc.uri.fsPath) {continue;} // 已查过
-                const loc = this.findSectionInFile(uri, targetId);
-                if (loc) {locs.push(loc);}
-            }
-            return locs.length === 1 ? locs[0] : locs;
-        });
+    static getInstance(): ConfigSectionManager {
+        if (!ConfigSectionManager.instance) {
+            ConfigSectionManager.instance = new ConfigSectionManager();
+        }
+        return ConfigSectionManager.instance;
     }
 
-    private findSection(doc: vscode.TextDocument, id: string): vscode.Location | undefined {
-        for (let i = 0; i < doc.lineCount; i++) {
-            const line = doc.lineAt(i).text.trim();
-            if (line === `[${id}]`) {
-                return new vscode.Location(doc.uri, new vscode.Range(i, 0, i, 0));
+    async scanAllSections(): Promise<void> {
+        const now = Date.now();
+        // 缓存5秒，避免频繁扫描
+        if (now - this.lastScanTime < 5000) {
+            return;
+        }
+
+        this.sectionCache.clear();
+        const uris = await vscode.workspace.findFiles('**/*.ini');
+        
+        for (const uri of uris) {
+            try {
+                const content = fs.readFileSync(uri.fsPath, 'utf8');
+                const lines = content.split(/\r?\n/);
+                
+                for (let i = 0; i < lines.length; i++) {
+                    const match = lines[i].match(/^\[(.+?)\]$/);
+                    if (match) {
+                        const sectionId = match[1];
+                        this.sectionCache.set(sectionId, new vscode.Location(uri, new vscode.Range(i, 0, i, 0)));
+                    }
+                }
+            } catch {
+                // 忽略无法读取的文件
             }
         }
+        
+        this.lastScanTime = now;
     }
 
-    private findSectionInFile(uri: vscode.Uri, id: string): vscode.Location | undefined {
-        try {
-            const content = fs.readFileSync(uri.fsPath, 'utf8');
-            const lines = content.split(/\r?\n/);
-            for (let i = 0; i < lines.length; i++) {
-                if (lines[i].trim() === `[${id}]`) {
-                    return new vscode.Location(uri, new vscode.Range(i, 0, i, 0));
+    getAllSectionIds(): string[] {
+        return Array.from(this.sectionCache.keys());
+    }
+
+    getSectionLocation(sectionId: string): vscode.Location | undefined {
+        return this.sectionCache.get(sectionId);
+    }
+
+    findMatchingSectionAtPosition(doc: vscode.TextDocument, pos: vscode.Position): { sectionId: string, range: vscode.Range } | null {
+        const line = doc.lineAt(pos.line).text;
+        const sectionIds = this.getAllSectionIds();
+        
+        // 按长度降序排序，优先匹配更长的配置项
+        sectionIds.sort((a, b) => b.length - a.length);
+        
+        for (const sectionId of sectionIds) {
+            // 在当前行查找所有匹配位置
+            let searchIndex = 0;
+            let foundIndex = -1;
+            
+            while ((foundIndex = line.indexOf(sectionId, searchIndex)) !== -1) {
+                const startPos = new vscode.Position(pos.line, foundIndex);
+                const endPos = new vscode.Position(pos.line, foundIndex + sectionId.length);
+                const range = new vscode.Range(startPos, endPos);
+                
+                // 检查点击位置是否在这个范围内
+                if (range.contains(pos)) {
+                    return { sectionId, range };
                 }
+                
+                searchIndex = foundIndex + 1;
             }
-        } catch { /* ignore unreadable */ }
+        }
+        
+        return null;
+    }
+}
+
+// 跳转定义
+class IniSectionDefinitionProvider implements vscode.DefinitionProvider {
+    async provideDefinition(
+        doc: vscode.TextDocument,
+        pos: vscode.Position
+    ): Promise<vscode.Location | vscode.Location[] | undefined> {
+        const manager = ConfigSectionManager.getInstance();
+        await manager.scanAllSections();
+        
+        const match = manager.findMatchingSectionAtPosition(doc, pos);
+        if (!match) {
+            return;
+        }
+
+        const location = manager.getSectionLocation(match.sectionId);
+        return location;
     }
 }
 // 查找引用
 class IniSectionReferenceProvider implements vscode.ReferenceProvider {
-    provideReferences(
+    async provideReferences(
         doc: vscode.TextDocument,
         pos: vscode.Position,
         context: vscode.ReferenceContext,
         token: vscode.CancellationToken
-    ): vscode.ProviderResult<vscode.Location[]> {
-        const range = doc.getWordRangeAtPosition(pos, /[\w\d]+/);
-        if (!range) { return []; }
-        const targetId = doc.getText(range);
+    ): Promise<vscode.Location[]> {
+        const manager = ConfigSectionManager.getInstance();
+        await manager.scanAllSections();
+        
+        const match = manager.findMatchingSectionAtPosition(doc, pos);
+        if (!match) {
+            return [];
+        }
 
-        // 同时扫描 .ini 和 .lua
-        return vscode.workspace.findFiles('**/*.{ini,lua}').then(uris => {
-            const locs: vscode.Location[] = [];
-            for (const uri of uris) {
-                if (token.isCancellationRequested) { break; }
+        const targetId = match.sectionId;
+        const uris = await vscode.workspace.findFiles('**/*.{ini,lua,txt,ts,md}');
+        const locs: vscode.Location[] = [];
 
+        for (const uri of uris) {
+            if (token.isCancellationRequested) {
+                break;
+            }
+
+            try {
                 const content = fs.readFileSync(uri.fsPath, 'utf8');
                 const lines = content.split(/\r?\n/);
 
                 lines.forEach((line, idx) => {
                     const trimmed = line.trim();
 
-                    // 1) .ini：行内引用（排除节名）
+                    // 1) .ini：行内引用（排除节名定义）
                     if (uri.fsPath.endsWith('.ini') && !trimmed.startsWith('[')) {
                         let offset = 0;
                         let idxInLine = -1;
@@ -89,126 +148,199 @@ class IniSectionReferenceProvider implements vscode.ReferenceProvider {
                     // 2) .lua：双引号或单引号里的 id
                     if (uri.fsPath.endsWith('.lua')) {
                         // 匹配 "id" 或 'id'
-                        const luaRegex = new RegExp(`(['"])${targetId}\\1`, 'g');
+                        const luaRegex = new RegExp(`(['"])${this.escapeRegex(targetId)}\\1`, 'g');
                         let match;
                         while ((match = luaRegex.exec(line)) !== null) {
                             const posStart = new vscode.Position(idx, match.index + 1); // +1 跳过引号
                             locs.push(new vscode.Location(uri, new vscode.Range(posStart, posStart.translate(0, targetId.length))));
                         }
                     }
+
+                    // 3) .ts：双引号或单引号里的 id，类似 lua
+                    if (uri.fsPath.endsWith('.ts')) {
+                        const tsRegex = new RegExp(`(['"\`])${this.escapeRegex(targetId)}\\1`, 'g');
+                        let match;
+                        while ((match = tsRegex.exec(line)) !== null) {
+                            const posStart = new vscode.Position(idx, match.index + 1); // +1 跳过引号
+                            locs.push(new vscode.Location(uri, new vscode.Range(posStart, posStart.translate(0, targetId.length))));
+                        }
+                    }
+
+                    // 4) .txt 和 .md：直接文本匹配
+                    if (uri.fsPath.endsWith('.txt') || uri.fsPath.endsWith('.md')) {
+                        let offset = 0;
+                        let idxInLine = -1;
+                        while ((idxInLine = line.indexOf(targetId, offset)) !== -1) {
+                            const posStart = new vscode.Position(idx, idxInLine);
+                            locs.push(new vscode.Location(uri, new vscode.Range(posStart, posStart.translate(0, targetId.length))));
+                            offset = idxInLine + targetId.length;
+                        }
+                    }
                 });
+            } catch {
+                // 忽略无法读取的文件
             }
-            return locs;
-        });
+        }
+
+        // 如果包含定义，也添加定义位置
+        if (context.includeDeclaration) {
+            const defLocation = manager.getSectionLocation(targetId);
+            if (defLocation) {
+                locs.push(defLocation);
+            }
+        }
+
+        return locs;
+    }
+
+    private escapeRegex(str: string): string {
+        return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 }
 
 // 鼠标悬停
 class IniSectionHoverProvider implements vscode.HoverProvider {
-    provideHover(
+    async provideHover(
         doc: vscode.TextDocument,
         pos: vscode.Position,
         token: vscode.CancellationToken
-    ): vscode.ProviderResult<vscode.Hover> {
-        const range = doc.getWordRangeAtPosition(pos, /[\w\d]+/);
-        if (!range) {
+    ): Promise<vscode.Hover | undefined> {
+        const manager = ConfigSectionManager.getInstance();
+        await manager.scanAllSections();
+        
+        const match = manager.findMatchingSectionAtPosition(doc, pos);
+        if (!match) {
             return;
         }
-        const targetId = doc.getText(range);
 
-        // 扫描工作区所有 .ini 找定义
-        return vscode.workspace.findFiles('**/*.ini').then(uris => {
-            for (const uri of uris) {
-                if (token.isCancellationRequested) {
-                    break;
+        const targetId = match.sectionId;
+        const defLocation = manager.getSectionLocation(targetId);
+        if (!defLocation) {
+            return;
+        }
+
+        try {
+            const content = fs.readFileSync(defLocation.uri.fsPath, 'utf8');
+            const lines = content.split(/\r?\n/);
+            const startLine = defLocation.range.start.line;
+            
+            const contentLines: string[] = [];
+            let inside = false;
+            
+            for (let i = startLine; i < lines.length; i++) {
+                const line = lines[i];
+                const trimmed = line.trim();
+                
+                if (trimmed === `[${targetId}]`) {
+                    inside = true;
+                    contentLines.push(line);
+                    continue;
                 }
-                const lines = fs.readFileSync(uri.fsPath, 'utf8').split(/\r?\n/);
-                let inside = false;
-                const contentLines: string[] = [];
-                for (const line of lines) {
-                    const trimmed = line.trim();
-                    if (trimmed === `[${targetId}]`) {
-                        inside = true;
-                        contentLines.push(line);
-                        continue;
+                
+                if (inside) {
+                    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+                        break; // 遇到下一个节，结束
                     }
-                    if (inside) {
-                        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-                            break; // 下一个节结束
-                        }
-                        contentLines.push(line);
-                    }
-                }
-                if (contentLines.length) {
-                    const md = new vscode.MarkdownString();
-                    md.appendCodeblock(contentLines.join('\n'), 'ini');
-                    return new vscode.Hover(md, range);
+                    contentLines.push(line);
                 }
             }
-        });
+            
+            if (contentLines.length) {
+                const md = new vscode.MarkdownString();
+                md.appendCodeblock(contentLines.join('\n'), 'ini');
+                return new vscode.Hover(md, match.range);
+            }
+        } catch {
+            // 忽略文件读取错误
+        }
+        
+        return;
     }
 }
 // 补全
 class IniSectionCompletionProvider implements vscode.CompletionItemProvider {
-    /**
-     * 提供补全项，基于工作区所有 .ini 文件中的节名及其后面的内容作为detail
-     */
     async provideCompletionItems(
         doc: vscode.TextDocument,
         pos: vscode.Position,
         token: vscode.CancellationToken,
         context: vscode.CompletionContext
     ): Promise<vscode.CompletionItem[]> {
-        const uris = await vscode.workspace.findFiles('**/*.ini');
-        const sectionMap = new Map<string, string>(); // key: section id, value: detail内容
-
-        for (const uri of uris) {
+        const manager = ConfigSectionManager.getInstance();
+        await manager.scanAllSections();
+        
+        const sectionIds = manager.getAllSectionIds();
+        const items: vscode.CompletionItem[] = [];
+        
+        for (const sectionId of sectionIds) {
             if (token.isCancellationRequested) {
                 break;
             }
-            try {
-                const content = fs.readFileSync(uri.fsPath, 'utf8');
-                const lines = content.split(/\r?\n/);
-
-                let currentSection = '';
-                let detailLines: string[] = [];
-
-                for (const line of lines) {
-                    const sectionMatch = line.match(/^\[(.+?)\]$/);
-                    if (sectionMatch) {
-                        // 保存上一个节的detail
-                        if (currentSection) {
-                            sectionMap.set(currentSection, detailLines.join('\n').trim());
+            
+            const item = new vscode.CompletionItem(sectionId, vscode.CompletionItemKind.Reference);
+            
+            // 获取节的详细内容
+            const location = manager.getSectionLocation(sectionId);
+            if (location) {
+                try {
+                    const content = fs.readFileSync(location.uri.fsPath, 'utf8');
+                    const lines = content.split(/\r?\n/);
+                    const startLine = location.range.start.line;
+                    
+                    const detailLines: string[] = [];
+                    let inside = false;
+                    
+                    for (let i = startLine; i < lines.length; i++) {
+                        const line = lines[i];
+                        const trimmed = line.trim();
+                        
+                        if (trimmed === `[${sectionId}]`) {
+                            inside = true;
+                            continue; // 不包含节名本身
                         }
-                        currentSection = sectionMatch[1];
-                        detailLines = [];
-                    } else if (currentSection) {
-                        // 收集当前节的内容作为detail
-                        if (line.trim() !== '') {
-                            detailLines.push(line);
+                        
+                        if (inside) {
+                            if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+                                break; // 遇到下一个节，结束
+                            }
+                            if (trimmed !== '') {
+                                detailLines.push(line);
+                            }
                         }
                     }
+                    
+                    if (detailLines.length > 0) {
+                        item.documentation = new vscode.MarkdownString('```ini\n[' + sectionId + ']\n' + detailLines.join('\n') + '\n```');
+                        item.documentation.isTrusted = true;
+                    }
+                } catch {
+                    // 忽略文件读取错误
                 }
-                // 保存最后一个节的detail
-                if (currentSection) {
-                    sectionMap.set(currentSection, detailLines.join('\n').trim());
-                }
-            } catch {
-                // 忽略无法读取的文件
             }
+            
+            // 设置插入范围（替换当前正在输入的内容）
+            const line = doc.lineAt(pos.line).text;
+            let start = pos.character;
+            let end = pos.character;
+            
+            // 向前查找单词边界
+            while (start > 0 && /[\w\d]/.test(line[start - 1])) {
+                start--;
+            }
+            
+            // 向后查找单词边界
+            while (end < line.length && /[\w\d]/.test(line[end])) {
+                end++;
+            }
+            
+            if (start < end) {
+                item.range = new vscode.Range(pos.line, start, pos.line, end);
+            }
+            
+            item.insertText = sectionId;
+            items.push(item);
         }
-
-		return Array.from(sectionMap.entries()).map(([id, detail]) => {
-			const item = new vscode.CompletionItem(id, vscode.CompletionItemKind.Reference);
-			item.documentation = new vscode.MarkdownString('```ini\n' + detail + '\n```');
-			item.documentation.isTrusted = true;
-
-			const wordRange = doc.getWordRangeAtPosition(pos, /[\w\d]+/);
-			item.range = wordRange ?? new vscode.Range(pos, pos);
-			item.insertText = id;
-			return item;
-		});
-
+        
+        return items;
     }
 }
 
@@ -221,7 +353,10 @@ export function activate(context: vscode.ExtensionContext) {
 	// 1. 语言选择器改为数组
 	const iniLuaSelector = [
 		{ language: 'ini', scheme: 'file' },
-		{ language: 'lua',  scheme: 'file' }
+		{ language: 'lua', scheme: 'file' },
+		{ language: 'plaintext', scheme: 'file' }, // txt 文件
+		{ language: 'typescript', scheme: 'file' }, // ts 文件
+		{ language: 'markdown', scheme: 'file' }  // md 文件
 	];
 
 	// 新增 GoTo Definition
