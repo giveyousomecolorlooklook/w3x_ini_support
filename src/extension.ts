@@ -20,7 +20,7 @@ class DecorationUpdateManager {
 		this.decorationProvider = provider;
 	}
 
-	// 为当前激活的编辑器更新装饰
+	// 为当前激活的编辑器更新装饰（使用光标位置）
 	async updateActiveEditor(editor: vscode.TextEditor): Promise<void> {
 		if (!this.decorationProvider || !editor) {
 			return;
@@ -48,9 +48,42 @@ class DecorationUpdateManager {
 			await tokenManager.updateFileTokens(filePath);
 		}
 		
-		// 立即应用装饰
-		await this.decorationProvider.updateDecorations(editor);
+		// 使用光标位置进行动态范围装饰更新
+		await this.decorationProvider.updateDecorationsByCursor(editor);
 		console.log(`INI Config Navigator: 激活编辑器装饰更新完成 - ${fileName}`);
+	}
+
+	// 为Hover位置更新装饰
+	async updateDecorationsByHover(editor: vscode.TextEditor, hoverLine: number): Promise<void> {
+		if (!this.decorationProvider || !editor) {
+			return;
+		}
+
+		const cacheManager = CacheRefreshManager.getInstance();
+		
+		// 如果正在刷新缓存，直接跳过更新
+		if (cacheManager.isRefreshingCaches()) {
+			console.log('INI Config Navigator: 缓存刷新中，跳过Hover装饰更新');
+			return;
+		}
+
+		const fileName = path.basename(editor.document.fileName);
+		const filePath = editor.document.uri.fsPath;
+		
+		console.log(`INI Config Navigator: Hover触发装饰更新 - ${fileName}, 行: ${hoverLine}`);
+		
+		// 确保有缓存，如果没有则构建
+		const tokenManager = FileTokenManager.getInstance();
+		const fileTokens = tokenManager.getFileTokens(filePath);
+		
+		if (!fileTokens || fileTokens.size === 0) {
+			console.log(`INI Config Navigator: Hover时无缓存，主动构建 - ${fileName}`);
+			await tokenManager.updateFileTokens(filePath);
+		}
+		
+		// 使用Hover位置进行动态范围装饰更新
+		await this.decorationProvider.updateDecorationsByHover(editor, hoverLine);
+		console.log(`INI Config Navigator: Hover装饰更新完成 - ${fileName}`);
 	}
 
 	// 清理资源
@@ -922,6 +955,16 @@ class IniSectionHoverProvider implements vscode.HoverProvider {
             return;
         }
 
+        // 触发动态范围装饰更新
+        const editor = vscode.window.activeTextEditor;
+        if (editor && editor.document.uri.toString() === doc.uri.toString()) {
+            const decorationUpdateManager = DecorationUpdateManager.getInstance();
+            // 异步触发Hover位置的装饰更新，不阻塞Hover显示
+            decorationUpdateManager.updateDecorationsByHover(editor, pos.line).catch(error => {
+                console.error('INI Config Navigator: Hover装饰更新失败:', error);
+            });
+        }
+
         const targetId = match.sectionId;
         const defLocation = this.configManager.getSectionLocation(targetId);
         const sectionContent = this.configManager.getSectionContent(targetId);
@@ -1031,6 +1074,11 @@ class IniSectionDecorationProvider {
     private static readonly MAX_VISIBLE_CHUNKS = 15; // 最多同时渲染15块（约3000行）
     private static readonly PRELOAD_BUFFER = 500; // 预加载缓冲区500行
     
+    // 动态范围优化
+    private static readonly HOVER_RANGE = 200; // Hover时检测范围上下200行
+    private static readonly CURSOR_RANGE = 200; // 光标位置检测范围上下200行
+    private fileRenderRanges = new Map<string, vscode.Range>(); // 每个文件的当前渲染范围
+    
     // 性能监控
     private renderMetrics = new Map<string, {
         lastRenderTime: number;
@@ -1134,6 +1182,92 @@ class IniSectionDecorationProvider {
     // 判断是否为大文件
     private isLargeFile(editor: vscode.TextEditor): boolean {
         return editor.document.lineCount > 1000;
+    }
+
+    // 根据位置计算动态渲染范围
+    private calculateDynamicRange(editor: vscode.TextEditor, centerLine: number, rangeSize: number = IniSectionDecorationProvider.CURSOR_RANGE): vscode.Range {
+        const totalLines = editor.document.lineCount;
+        const startLine = Math.max(0, centerLine - rangeSize);
+        const endLine = Math.min(totalLines - 1, centerLine + rangeSize);
+        return new vscode.Range(startLine, 0, endLine, Number.MAX_SAFE_INTEGER);
+    }
+
+    // 为编辑器设置动态渲染范围（光标位置）
+    async updateDecorationsByCursor(editor: vscode.TextEditor): Promise<void> {
+        if (!editor) {
+            return;
+        }
+
+        const filePath = editor.document.uri.fsPath;
+        const cursorLine = editor.selection.active.line;
+        const dynamicRange = this.calculateDynamicRange(editor, cursorLine, IniSectionDecorationProvider.CURSOR_RANGE);
+        
+        console.log(`INI Config Navigator: 根据光标位置更新装饰范围 - ${path.basename(filePath)}, 光标行: ${cursorLine}, 范围: ${dynamicRange.start.line}-${dynamicRange.end.line}`);
+        
+        // 保存渲染范围
+        this.fileRenderRanges.set(filePath, dynamicRange);
+        
+        // 使用动态范围更新装饰
+        await this.updateDecorationsWithRange(editor, dynamicRange);
+    }
+
+    // 为编辑器设置动态渲染范围（Hover位置）
+    async updateDecorationsByHover(editor: vscode.TextEditor, hoverLine: number): Promise<void> {
+        if (!editor) {
+            return;
+        }
+
+        const filePath = editor.document.uri.fsPath;
+        const dynamicRange = this.calculateDynamicRange(editor, hoverLine, IniSectionDecorationProvider.HOVER_RANGE);
+        
+        console.log(`INI Config Navigator: 根据Hover位置更新装饰范围 - ${path.basename(filePath)}, Hover行: ${hoverLine}, 范围: ${dynamicRange.start.line}-${dynamicRange.end.line}`);
+        
+        // 保存渲染范围
+        this.fileRenderRanges.set(filePath, dynamicRange);
+        
+        // 使用动态范围更新装饰
+        await this.updateDecorationsWithRange(editor, dynamicRange);
+    }
+
+    // 使用指定范围更新装饰
+    private async updateDecorationsWithRange(editor: vscode.TextEditor, renderRange: vscode.Range): Promise<void> {
+        const filePath = editor.document.uri.fsPath;
+        
+        // 检查是否正在刷新缓存
+        const cacheRefreshManager = CacheRefreshManager.getInstance();
+        if (cacheRefreshManager.isRefreshingCaches()) {
+            console.log(`INI Config Navigator: 缓存刷新中，跳过装饰更新 - ${path.basename(filePath)}`);
+            return;
+        }
+
+        // 从缓存获取该文件的分词信息
+        const fileTokens = this.tokenManager.getFileTokens(filePath);
+        if (!fileTokens || fileTokens.size === 0) {
+            console.log(`INI Config Navigator: 暂无缓存分词信息，保持现有装饰 - ${path.basename(filePath)}`);
+            return;
+        }
+
+        const allDecorations: vscode.DecorationOptions[] = [];
+        
+        // 只渲染指定范围内的装饰
+        for (const [sectionId, ranges] of fileTokens) {
+            for (const range of ranges) {
+                // 检查范围是否在渲染范围内
+                if (renderRange.intersection(range)) {
+                    allDecorations.push({
+                        range
+                    });
+                }
+            }
+        }
+
+        console.log(`INI Config Navigator: 动态范围装饰更新 - ${path.basename(filePath)}, 范围: ${renderRange.start.line}-${renderRange.end.line}, 装饰数量: ${allDecorations.length}`);
+        
+        // 应用装饰
+        editor.setDecorations(linkableTextDecorationType, allDecorations);
+        
+        // 更新缓存
+        this.fileDecorationCache.set(filePath, allDecorations);
     }
 
     async updateDecorations(editor: vscode.TextEditor) {
@@ -1357,6 +1491,7 @@ class IniSectionDecorationProvider {
         this.chunkCache.delete(filePath);
         this.visibleChunks.delete(filePath);
         this.renderMetrics.delete(filePath);
+        this.fileRenderRanges.delete(filePath); // 清理渲染范围
         
         const timeout = this.fileTimeouts.get(filePath);
         if (timeout) {
