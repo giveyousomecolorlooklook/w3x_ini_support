@@ -8,7 +8,7 @@
   "license": "MIT", 
   "displayName": "INI Config Navigator",
   "description": "Smart navigation for INI config files: go-to-definition, visual highlighting, hover preview, and auto-completion across multiple file types (.ini, .lua, .ts, .txt, .md)",
-  "version": "0.0.4",
+  "version": "1.0.0",
   "engines": {
     "vscode": "^1.102.0"
   },
@@ -46,6 +46,11 @@
       {
         "command": "w3x-ini-support.goToDefinition",
         "title": "跳转到INI配置项定义",
+        "category": "INI Config Navigator"
+      },
+      {
+        "command": "w3x-ini-support.goToReferences",
+        "title": "查看INI配置项所有引用",
         "category": "INI Config Navigator"
       }
     ]
