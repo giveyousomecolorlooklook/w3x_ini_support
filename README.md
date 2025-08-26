@@ -1,15 +1,66 @@
-# w3x-ini-support
+# INI Config Navigator
 
-Adds features for `.ini` and `.lua` files in VS Code:
+VS Code 扩展，为 INI 配置文件提供智能导航功能。特别适合游戏开发项目（如魔兽争霸3）。
 
-- **Go to Definition** – Place the cursor on an id and press F12 / Ctrl+Click to jump to the corresponding `[id]` section.  
-- **Find All References** – Place the cursor on an id or section name and press Shift+F12 to list every usage across the workspace.  
-- **Hover Preview** – Hover over any id (definition or reference) to instantly preview the entire `[id]` section.
+## 🚀 核心功能
 
-- **Completion** – Type (`.` or `,` or `'`) to trigger completion for section names.
-  
+### 智能跳转 (F12)
+- **优先定义**：始终优先跳转到 INI 配置项定义
+- **选择面板**：显示所有相关位置的快速选择界面
+- **可视化高亮**：配置项显示蓝色下划线，可点击悬停链接
 
-## Usage
+### 多文件支持
+- **`.ini`** - 配置项定义和引用
+- **`.lua`** - 字符串引用 `"config_id"`
+- **`.ts`** - 字符串引用 `"config_id"` / `'config_id'` / `` `config_id` ``
+- **`.txt/.md`** - 直接文本匹配
 
-1. Open any `.ini` or `lua` file to activate the extension.  
-2. Use the shortcuts above to navigate, find references, or simply hover for a preview.
+### 增强功能
+- **悬停预览** - 显示完整配置项内容
+- **自动补全** - 输入 `.` `"` `,` `'` 触发补全
+- **实时高亮** - 自动识别并高亮可链接配置项
+
+## � 使用示例
+
+### INI 配置 (`units.ini`)
+```ini
+[footman]
+name = "步兵"
+hp = 420
+damage = 12
+```
+
+### Lua 脚本 (`game.lua`)
+```lua
+CreateUnit("footman", x, y)  -- "footman" 可跳转到定义
+```
+
+### TypeScript (`config.ts`)
+```typescript
+const unit = getConfig("footman");  // "footman" 可跳转到定义
+```
+
+## ⚡ 快速操作
+
+| 功能 | 操作 | 结果 |
+|------|------|------|
+| 跳转定义 | `F12` 或 `Ctrl+点击` | 弹出选择面板，定义排在最前 |
+| 悬停预览 | 鼠标悬停 | 显示配置项完整内容 + 跳转链接 |
+| 自动补全 | 输入触发字符 | 显示所有可用配置项 |
+
+## 🎯 特色亮点
+
+- **配置驱动**：先扫描 INI 配置，再精确匹配引用
+- **定义优先**：跳转结果中定义位置始终排在最前
+- **智能识别**：根据文件类型自动识别引用方式
+- **视觉反馈**：高亮显示 + 悬停链接，一眼识别可跳转项
+
+## 🛠️ 安装使用
+
+1. 在 VS Code 扩展市场搜索 "INI Config Navigator"
+2. 安装后自动激活支持的文件类型
+3. 打开包含 `.ini` 配置文件的项目即可使用
+
+---
+
+适用于任何使用 INI 配置文件的项目，特别是游戏开发、脚本配置等场景。
